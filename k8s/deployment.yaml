@@ -18,7 +18,7 @@ spec:
         - name: ecommerce-web
           image: acrecommercedevops01.azurecr.io/ecommerce-frontend:latest
           ports:
-            - containerPort: 80
+            - containerPort: 8080
           resources:
             requests:
               cpu: "100m"

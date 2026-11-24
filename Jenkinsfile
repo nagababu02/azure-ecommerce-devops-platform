@@ -5,7 +5,7 @@ pipeline {
         choice(
             name: 'ACTION',
             choices: ['apply', 'destroy'],
-            description: 'apply = Provision Infra & Push Image | destroy = Tear down Infra'
+            description: 'apply = DevSecOps Build, Infra & GitOps | destroy = Tear down Infra'
         )
     }
 
@@ -15,7 +15,9 @@ pipeline {
         ARM_SUBSCRIPTION_ID = credentials('azure-subscription-id')
         ARM_TENANT_ID       = credentials('azure-tenant-id')
         GITHUB_PAT          = credentials('github-pat')
-        APP_NAME            = "ecommerce-frontend"
+        SONAR_TOKEN         = credentials('sonar-token')
+        SONAR_HOST_URL      = 'http://localhost:9000'
+        APP_NAME            = 'ecommerce-frontend'
         IMAGE_TAG           = "${BUILD_NUMBER}"
     }
 
@@ -23,6 +25,45 @@ pipeline {
         stage('Checkout Code') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Maven Build & Unit Tests') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir('app') {
+                    sh 'mvn clean install'
+                }
+            }
+        }
+
+        stage('SonarQube Code Quality Scan') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir('app') {
+                    sh '''
+                        mvn sonar:sonar \
+                          -Dsonar.projectKey=azure-ecommerce-devops \
+                          -Dsonar.projectName="Azure E-Commerce DevSecOps" \
+                          -Dsonar.host.url=$SONAR_HOST_URL \
+                          -Dsonar.token=$SONAR_TOKEN
+                    '''
+                }
+            }
+        }
+
+        stage('Trivy Filesystem Vulnerability Scan') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir('app') {
+                    sh 'trivy fs --severity HIGH,CRITICAL --exit-code 0 .'
+                }
             }
         }
 
@@ -44,7 +85,7 @@ pipeline {
             }
         }
 
-        stage('Build & Push Docker Image to ACR') {
+        stage('Docker Build & Trivy Image Scan') {
             when {
                 expression { params.ACTION == 'apply' }
             }
@@ -57,12 +98,23 @@ pipeline {
                 }
                 dir('app') {
                     sh '''
-                        az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
-                        az acr login --name $(echo $ACR_SERVER | cut -d'.' -f1)
                         docker build -t $FULL_IMAGE .
-                        docker push $FULL_IMAGE
+                        trivy image --severity HIGH,CRITICAL --exit-code 0 $FULL_IMAGE
                     '''
                 }
+            }
+        }
+
+        stage('Push Image to ACR') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                sh '''
+                    az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+                    az acr login --name $(echo $ACR_SERVER | cut -d'.' -f1)
+                    docker push $FULL_IMAGE
+                '''
             }
         }
 
@@ -90,7 +142,7 @@ pipeline {
             }
         }
         success {
-            echo "CI completed! ArgoCD will automatically sync ${env.FULL_IMAGE} to AKS."
+            echo "DevSecOps CI completed! ArgoCD will sync ${env.FULL_IMAGE} to AKS."
         }
     }
 }
